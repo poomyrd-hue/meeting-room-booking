@@ -1,0 +1,193 @@
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const OPEN = 8 * 60, CLOSE = 20 * 60, STEP = 30, MAX_MIN = 240, MAX_DAYS = 60;
+
+const ERRORS = {
+  invalid_slot: "เวลาต้องเริ่มและจบที่ :00 หรือ :30",
+  invalid_duration: "ระยะเวลาต้องอยู่ระหว่าง 30 นาที ถึง 4 ชั่วโมง",
+  outside_business_hours: "จองได้เฉพาะ 08:00–20:00 วันจันทร์–ศุกร์",
+  in_the_past: "เวลานี้ผ่านไปแล้ว",
+  too_far_ahead: "จองล่วงหน้าได้ไม่เกิน 60 วัน",
+  over_capacity: "จำนวนคนเกินความจุของห้อง",
+  time_conflict: "ห้องนี้ถูกจองในช่วงเวลานี้แล้ว กรุณาเลือกเวลาหรือห้องอื่น",
+  already_cancelled: "การจองนี้ถูกยกเลิกไปแล้ว",
+  already_started: "การจองนี้เริ่มไปแล้ว ยกเลิกไม่ได้",
+  not_booker: "ยกเลิกได้เฉพาะผู้จองเท่านั้น",
+  room_not_found: "ไม่พบห้องนี้",
+  booking_not_found: "ไม่พบการจองนี้",
+  invalid_request: "ข้อมูลไม่ครบหรือไม่ถูกต้อง",
+  network: "เชื่อมต่อเซิร์ฟเวอร์ไม่ได้ กรุณาลองใหม่",
+};
+const errText = (code) => ERRORS[code] || "เกิดข้อผิดพลาดที่ไม่คาดคิด กรุณาลองใหม่";
+
+let rooms = [];
+
+// ---- helpers -------------------------------------------------------------
+async function api(path, opts) {
+  let res;
+  try { res = await fetch(path, opts); } catch { throw { code: "network" }; }
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw { code: (body && body.code) || "internal_error" };
+  return body;
+}
+
+// Bangkok wall-clock "now" as a Date whose UTC fields hold Bangkok time (UTC+7, no DST).
+const bkkNow = () => new Date(Date.now() + 7 * 3600e3);
+const bkkDate = (d = bkkNow()) => d.toISOString().slice(0, 10);
+const pad = (n) => String(n).padStart(2, "0");
+const hhmm = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
+const weekday = (date) => new Date(date + "T00:00:00Z").getUTCDay(); // 0 = Sunday
+const fmtTime = (iso) => new Date(iso).toLocaleTimeString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false });
+const fmtDate = (date) => new Date(date + "T00:00:00Z").toLocaleDateString("th-TH", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const rfc = (date, min) => `${date}T${hhmm(min)}:00+07:00`;
+
+function el(tag, props = {}, ...kids) {
+  const e = Object.assign(document.createElement(tag), props);
+  e.append(...kids);
+  return e;
+}
+
+function say(text, kind) {
+  const s = $("status");
+  s.hidden = !text;
+  s.textContent = text || "";
+  s.className = "status " + (kind || "");
+  if (text) s.dataset.icon = kind === "err" ? "⚠" : "✓"; // icon so colour is not the only signal
+  else delete s.dataset.icon;
+}
+
+async function busy(btn, fn) {
+  btn.disabled = true;
+  try { await fn(); } finally { btn.disabled = false; }
+}
+
+// ---- search form ---------------------------------------------------------
+function fillStarts() {
+  const date = $("date").value, prev = Number($("start").value);
+  const nowMin = date === bkkDate() ? bkkNow().getUTCHours() * 60 + bkkNow().getUTCMinutes() : -1;
+  const opts = [];
+  for (let m = OPEN; m < CLOSE; m += STEP) if (m > nowMin) opts.push(el("option", { value: m, textContent: hhmm(m) }));
+  $("start").replaceChildren(...opts);
+  if (opts.some((o) => Number(o.value) === prev)) $("start").value = prev;
+  fillDurations();
+}
+
+function fillDurations() {
+  const start = Number($("start").value), prev = Number($("duration").value);
+  const opts = [];
+  for (let d = STEP; d <= MAX_MIN && start + d <= CLOSE; d += STEP) {
+    const label = d % 60 === 0 ? `${d / 60} ชั่วโมง` : d > 60 ? `${Math.floor(d / 60)} ชั่วโมง 30 นาที` : "30 นาที";
+    opts.push(el("option", { value: d, textContent: label }));
+  }
+  $("duration").replaceChildren(...opts);
+  if (opts.some((o) => Number(o.value) === prev)) $("duration").value = prev;
+}
+
+// Today if a slot is still left and it is a weekday, otherwise the next weekday.
+function firstBookableDate() {
+  const now = bkkNow();
+  let d = new Date(now), late = now.getUTCHours() * 60 + now.getUTCMinutes() >= CLOSE - STEP;
+  if (late) d = new Date(d.getTime() + 864e5);
+  while ([0, 6].includes(d.getUTCDay())) d = new Date(d.getTime() + 864e5);
+  return bkkDate(d);
+}
+
+function currentQuery() {
+  const date = $("date").value, start = Number($("start").value), dur = Number($("duration").value);
+  const n = Number($("attendees").value);
+  if (!date || !start || !dur) return null;
+  return { date, start, end: start + dur, attendees: n };
+}
+
+async function search() {
+  const q = currentQuery();
+  const day = q && weekday(q.date);
+  if (!q || !(q.attendees >= 1)) return say(errText("invalid_request"), "err");
+  if (day === 0 || day === 6) return say(errText("outside_business_hours"), "err");
+  const params = new URLSearchParams({ start: rfc(q.date, q.start), end: rfc(q.date, q.end), attendees: q.attendees });
+  try {
+    const list = await api("/rooms/available?" + params);
+    renderResults(list, q);
+  } catch (e) { say(errText(e.code), "err"); }
+}
+
+function renderResults(list, q) {
+  const ul = $("results");
+  if (!list.length) return ul.replaceChildren(el("li", { className: "empty" }, "ไม่มีห้องว่างที่จุคนได้ในช่วงเวลานี้"));
+  ul.replaceChildren(...list.map((r) => {
+    const btn = el("button", { type: "button", textContent: "จองห้องนี้" });
+    btn.setAttribute("aria-label", `จองห้อง ${r.name}`);
+    btn.onclick = () => busy(btn, () => book(r, q));
+    return el("li", {}, el("div", {}, el("strong", {}, r.name), el("div", { className: "meta" }, `ชั้น ${r.floor} · จุ ${r.capacity} คน`)), btn);
+  }));
+}
+
+async function book(room, q) {
+  const user = $("user").value.trim();
+  if (!user) { say("กรุณากรอกชื่อของคุณก่อนจอง", "err"); $("user").focus(); return; }
+  try {
+    await api("/bookings", { method: "POST", body: JSON.stringify({ room_id: room.id, user_id: user, start: rfc(q.date, q.start), end: rfc(q.date, q.end), attendees: q.attendees }) });
+    $("room").value = room.id; $("sdate").value = q.date; // show the new booking in the schedule
+    say(`จองห้อง ${room.name} สำเร็จ · ${fmtDate(q.date)} ${hhmm(q.start)}–${hhmm(q.end)}`, "ok");
+  } catch (e) { say(errText(e.code), "err"); }
+  await search(); // availability changed either way
+  await loadSchedule();
+}
+
+// ---- schedule ------------------------------------------------------------
+async function loadSchedule() {
+  const id = $("room").value, date = $("sdate").value, ul = $("schedule");
+  if (!id || !date) return;
+  try {
+    const list = await api(`/rooms/${encodeURIComponent(id)}/bookings?date=${date}`);
+    if (!list.length) return ul.replaceChildren(el("li", { className: "empty" }, "ยังไม่มีการจองในวันนี้"));
+    const user = $("user").value.trim(), now = Date.now();
+    ul.replaceChildren(...list.map((b) => {
+      const mine = user && b.booker_id === user, started = new Date(b.start).getTime() <= now;
+      const right = el("span", { className: "meta" });
+      if (mine && !started) {
+        const btn = el("button", { type: "button", className: "secondary", textContent: "ยกเลิก" });
+        btn.setAttribute("aria-label", `ยกเลิกการจอง ${fmtTime(b.start)}–${fmtTime(b.end)}`);
+        btn.onclick = () => busy(btn, () => cancel(b));
+        right.replaceChildren(btn);
+      } else if (started) right.textContent = "เริ่มแล้ว";
+      return el("li", {}, el("div", {}, el("strong", {}, `${fmtTime(b.start)}–${fmtTime(b.end)}`), el("div", { className: "meta" }, `ผู้จอง ${b.booker_id} · ${b.attendees} คน${mine ? " (คุณ)" : ""}`)), right);
+    }));
+  } catch (e) { say(errText(e.code), "err"); }
+}
+
+async function cancel(b) {
+  if (!confirm(`ยกเลิกการจอง ${fmtTime(b.start)}–${fmtTime(b.end)} ใช่หรือไม่?`)) return;
+  try {
+    await api(`/bookings/${b.id}/cancel`, { method: "POST", headers: { "X-User-Id": $("user").value.trim() } });
+    say("ยกเลิกการจองแล้ว", "ok");
+  } catch (e) { say(errText(e.code), "err"); }
+  await loadSchedule();
+  if (currentQuery()) await search();
+}
+
+// ---- init ----------------------------------------------------------------
+async function init() {
+  try { $("user").value = localStorage.getItem("user") || ""; } catch {}
+  $("user").addEventListener("change", () => {
+    try { localStorage.setItem("user", $("user").value.trim()); } catch {}
+    loadSchedule();
+  });
+
+  const today = bkkDate(), first = firstBookableDate(), max = bkkDate(new Date(bkkNow().getTime() + MAX_DAYS * 864e5));
+  for (const id of ["date", "sdate"]) Object.assign($(id), { value: first, min: id === "date" ? today : "", max: id === "date" ? max : "" });
+  fillStarts();
+
+  $("date").onchange = fillStarts;
+  $("start").onchange = fillDurations;
+  $("search").onsubmit = (ev) => { ev.preventDefault(); say(""); busy(ev.submitter, search); };
+  $("room").onchange = $("sdate").onchange = loadSchedule;
+
+  try {
+    rooms = await api("/rooms");
+    $("room").replaceChildren(...rooms.map((r) => el("option", { value: r.id, textContent: `${r.name} (ชั้น ${r.floor}, ${r.capacity} คน)` })));
+    await loadSchedule();
+  } catch (e) { say(errText(e.code), "err"); }
+}
+init();

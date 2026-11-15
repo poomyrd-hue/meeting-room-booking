@@ -13,6 +13,7 @@ import (
 
 	"github.com/poomyrd-hue/meeting-room-booking/internal/api"
 	"github.com/poomyrd-hue/meeting-room-booking/internal/store"
+	"github.com/poomyrd-hue/meeting-room-booking/web"
 )
 
 type systemClock struct{}
@@ -28,6 +29,16 @@ func main() {
 	if err := run(*addr, *dbPath, *roomsPath); err != nil {
 		log.Fatal(err)
 	}
+}
+
+// handler serves the API routes from apiHandler and the embedded frontend for everything else.
+func handler(apiHandler http.Handler) http.Handler {
+	mux := http.NewServeMux()
+	for _, p := range []string{"/rooms", "/rooms/", "/bookings", "/bookings/"} {
+		mux.Handle(p, apiHandler)
+	}
+	mux.Handle("/", http.FileServerFS(web.FS))
+	return mux
 }
 
 func run(addr, dbPath, roomsPath string) error {
@@ -47,7 +58,7 @@ func run(addr, dbPath, roomsPath string) error {
 
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           api.New(s, systemClock{}),
+		Handler:           handler(api.New(s, systemClock{})),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,
