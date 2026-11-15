@@ -28,6 +28,17 @@ go run ./cmd/server
 [{"id": "r1", "name": "Alpha", "capacity": 8, "floor": 1}]
 ```
 
+### รันด้วย Docker
+
+```bash
+docker build -t meeting-room .
+docker run -p 8080:8080 -v meeting-room-data:/data meeting-room
+```
+
+- ฐานข้อมูลอยู่ที่ `/data` ต้อง mount volume ไม่งั้นข้อมูลหายเมื่อลบ container
+- ห้องอ่านจาก `/app/rooms.json` ในอิมเมจ แก้ห้องโดย mount ไฟล์ของคุณทับ: `-v ./rooms.json:/app/rooms.json:ro`
+- ตัวอิมเมจรันเป็นผู้ใช้ที่ไม่ใช่ root และมี flag ตั้งไว้แล้ว (`-addr :8080`, `-db /data/meeting-room.db`)
+
 ## กฎการจอง
 
 - ช่วงละ 30 นาที ขั้นต่ำ 30 นาที สูงสุด 4 ชั่วโมง เริ่ม/จบที่ :00 หรือ :30
