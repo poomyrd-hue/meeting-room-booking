@@ -1,0 +1,5 @@
+[
+  {"id": "r1", "name": "Alpha", "capacity": 8, "floor": 1},
+  {"id": "r2", "name": "Beta", "capacity": 4, "floor": 2},
+  {"id": "r3", "name": "Gamma", "capacity": 12, "floor": 3}
+]
