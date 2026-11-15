@@ -2,7 +2,7 @@
 
 REST API สำหรับจองห้องประชุมภายในองค์กรเดียว เขียนด้วย Go + SQLite
 
-- จอง/ยกเลิกห้อง โดยห้ามจองซ้อนเวลาในห้องเดียวกัน
+- จอง/แก้ไข/ยกเลิกห้อง โดยห้ามจองซ้อนเวลาในห้องเดียวกัน
 - ดูตารางของห้องรายวัน และค้นหาห้องว่างที่จุคนได้
 - มีหน้าเว็บให้ใช้ที่ `/` (ดู [หน้าเว็บ](#หน้าเว็บ)) แต่ไม่มีล็อกอินใน MVP (ดู [ข้อจำกัด](#ข้อจำกัด))
 
@@ -57,7 +57,7 @@ docker run -p 8080:8080 -v meeting-room-data:/data meeting-room
 - จองย้อนหลังไม่ได้ และล่วงหน้าได้ไม่เกิน 60 วัน
 - จำนวนผู้เข้าร่วมต้องไม่เกินความจุห้อง
 - จบ 10:00 กับเริ่ม 10:00 ในห้องเดียวกันไม่ถือว่าชน
-- ยกเลิกได้เฉพาะผู้จอง และก่อนเวลาเริ่มเท่านั้น ไม่มีการแก้ไข (ยกเลิกแล้วจองใหม่)
+- ยกเลิกหรือแก้ไขได้เฉพาะผู้จอง และก่อนเวลาเริ่มเท่านั้น แก้ได้ `start`, `end`, `attendees` (เปลี่ยนห้องไม่ได้ ให้ยกเลิกแล้วจองใหม่) ผลที่แก้แล้วต้องผ่านกฎเดียวกับการจอง
 
 ## API
 
@@ -70,6 +70,7 @@ docker run -p 8080:8080 -v meeting-room-data:/data meeting-room
 | `GET /rooms/{id}/bookings?date=YYYY-MM-DD` | การจองของห้องในวันนั้น (ตามเวลา Bangkok) |
 | `POST /bookings` | จอง body: `room_id, user_id, start, end, attendees` → 201 |
 | `POST /bookings/{id}/cancel` | ยกเลิก ส่ง header `X-User-Id` → 200 |
+| `PATCH /bookings/{id}` | แก้ไข/ย้ายเวลา ส่ง header `X-User-Id` และ body อย่างน้อยหนึ่งใน `start, end, attendees` (ฟิลด์ที่ไม่ส่งคงเดิม) → 200 พร้อม Booking ที่อัปเดต |
 
 ```bash
 # จอง
@@ -77,6 +78,10 @@ curl -X POST localhost:8080/bookings -d '{
   "room_id": "r1", "user_id": "alice",
   "start": "2026-11-17T10:00:00+07:00", "end": "2026-11-17T11:00:00+07:00",
   "attendees": 4}'
+
+# แก้ไข/ย้ายเวลา (ส่งเฉพาะฟิลด์ที่เปลี่ยน)
+curl -X PATCH localhost:8080/bookings/<id> -H 'X-User-Id: alice' -d '{
+  "start": "2026-11-17T13:00:00+07:00", "end": "2026-11-17T14:30:00+07:00"}'
 
 # ยกเลิก
 curl -X POST localhost:8080/bookings/<id>/cancel -H 'X-User-Id: alice'
@@ -89,7 +94,7 @@ curl -X POST localhost:8080/bookings/<id>/cancel -H 'X-User-Id: alice'
 | HTTP | code |
 |---|---|
 | 422 | `invalid_slot`, `invalid_duration`, `outside_business_hours`, `in_the_past`, `too_far_ahead`, `over_capacity`, `invalid_request` |
-| 409 | `time_conflict`, `already_cancelled`, `already_started` |
+| 409 | `time_conflict`, `already_cancelled`, `already_started` (ใช้กับแก้ไขด้วย) |
 | 403 | `not_booker` |
 | 404 | `room_not_found`, `booking_not_found` |
 

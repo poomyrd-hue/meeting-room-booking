@@ -16,7 +16,7 @@
 | ผู้จอง | `user_id` ตัดช่องว่างหน้า-หลังแล้วต้องไม่ว่าง และยาวไม่เกิน 60 ตัวอักษร ไม่เช่นนั้น `invalid_request` (ใช้กับ `X-User-Id` ด้วย) |
 | ชน | ห้องเดียวกัน, status `confirmed`, ช่วงเวลาทับกัน → ปฏิเสธ (`cancelled` ไม่นับ) |
 | ยกเลิก | เฉพาะ Booker; เฉพาะ Booking ที่ `confirmed` และ `start` ยังไม่ถึง; ไม่ลบข้อมูล |
-| แก้ไข | ไม่มี — ยกเลิกแล้วจองใหม่ |
+| แก้ไข | เฉพาะ Booker; เฉพาะ Booking ที่ `confirmed` และ `start` ยังไม่ถึง; แก้ได้ `start`, `end`, `attendees` (เปลี่ยนห้องไม่ได้); ฟิลด์ที่ไม่ส่งคงค่าเดิม แล้วผลรวมต้องผ่านกฎเวลา/ความจุเดียวกับการจอง และไม่ชนกับ Booking อื่น (ไม่นับตัวเองและ `cancelled`) |
 
 ## เวลา
 
@@ -45,7 +45,7 @@ Room เพิ่มจากไฟล์ seed (`rooms.json`) ตอนเริ
 
 ## API
 
-ทุก request ที่เปลี่ยนข้อมูลส่ง `user_id` ใน body (POST /bookings) หรือ header `X-User-Id` (cancel)
+ทุก request ที่เปลี่ยนข้อมูลส่ง `user_id` ใน body (POST /bookings) หรือ header `X-User-Id` (cancel, edit)
 
 | Endpoint | หน้าที่ |
 |---|---|
@@ -54,6 +54,7 @@ Room เพิ่มจากไฟล์ seed (`rooms.json`) ตอนเริ
 | `GET /rooms/{id}/bookings?date=YYYY-MM-DD` | Booking `confirmed` ของห้องในวันนั้น (วันตาม Asia/Bangkok) |
 | `POST /bookings` | body: `room_id, user_id, start, end, attendees` → 201 |
 | `POST /bookings/{id}/cancel` | ยกเลิก → 200 |
+| `PATCH /bookings/{id}` | แก้ไข/ย้ายเวลา: header `X-User-Id`, body มีอย่างน้อยหนึ่งใน `start, end, attendees` → 200 พร้อม Booking ที่อัปเดต (รูปแบบเดียวกับ 201 ของ POST) |
 
 หมายเหตุพฤติกรรมจริง: `GET /rooms/available` ตรวจแค่ว่า `start`/`end` เป็น RFC 3339, `end` > `start`, `attendees` ≥ 1 (ผิด → 422 `invalid_request`) ไม่ตรวจกฎเวลาทำการ; ฟิลด์ `message` ในข้อผิดพลาดเท่ากับ `code`
 
@@ -65,15 +66,17 @@ Room เพิ่มจากไฟล์ seed (`rooms.json`) ตอนเริ
 |---|---|---|
 | 422 | `invalid_slot`, `invalid_duration`, `outside_business_hours`, `in_the_past`, `too_far_ahead`, `over_capacity`, `invalid_request` | กฎเวลา/ความจุ/ข้อมูลผิด |
 | 409 | `time_conflict` | ชนกับ Booking อื่น |
-| 409 | `already_cancelled`, `already_started` | ยกเลิกไม่ได้ตามสถานะ |
-| 403 | `not_booker` | ยกเลิกของคนอื่น |
+| 409 | `already_cancelled`, `already_started` | ยกเลิก/แก้ไขไม่ได้ตามสถานะ |
+| 403 | `not_booker` | ยกเลิก/แก้ไขของคนอื่น |
 | 404 | `room_not_found`, `booking_not_found` | ไม่พบ |
 
 ลำดับตรวจ POST /bookings: ข้อมูลครบ → ห้องมีอยู่ → กฎเวลา → ความจุ → ชน (ภายใน transaction)
 
+ลำดับตรวจ PATCH /bookings/{id}: header/body ถูกรูปแบบ (ต้องมีอย่างน้อยหนึ่งฟิลด์ ไม่รับฟิลด์ที่ไม่รู้จัก เช่น `room_id`; `attendees` < 1 → `invalid_request`) → ไม่พบ `booking_not_found` (404) → ไม่ใช่ Booker `not_booker` (403) → `already_cancelled` (409) → `already_started` (409, `start` <= ปัจจุบัน) → กฎเวลา/ความจุของค่าที่รวมแล้ว (422) → ชน `time_conflict` (409) การอ่าน ตรวจ และ UPDATE อยู่ใน transaction `BEGIN IMMEDIATE` เดียว; `id`, `created_at`, `booker_id`, `status` ไม่เปลี่ยน
+
 ## การกันจองซ้อน
 
-ตรวจชนและ INSERT ใน transaction เดียวด้วย `BEGIN IMMEDIATE` (SQLite ล็อกเขียนทั้งฐาน) รันโปรเซสเดียว ไม่มี lock ภายนอก
+ตรวจชนและ INSERT/UPDATE ใน transaction เดียวด้วย `BEGIN IMMEDIATE` (SQLite ล็อกเขียนทั้งฐาน) รันโปรเซสเดียว ไม่มี lock ภายนอก
 - shortcut: ใช้ได้เฉพาะโปรเซสเดียว ถ้าขยายหลายโปรเซส/หลายเครื่อง ให้ย้ายไป Postgres และใช้ exclusion constraint บน `tstzrange`
 
 ## โครงสร้างโค้ด (Go)
