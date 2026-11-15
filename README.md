@@ -76,6 +76,7 @@ curl -X POST localhost:8080/bookings/<id>/cancel -H 'X-User-Id: alice'
 ```bash
 go vet ./...
 go test ./...
+go test -race ./...   # ต้องมี gcc และ CGO_ENABLED=1
 ```
 
 โครงสร้าง: `internal/booking` (กฎ ไม่ผูกกับ HTTP), `internal/store` (SQLite), `internal/api` (HTTP), `cmd/server` (main)
@@ -85,4 +86,3 @@ go test ./...
 - **ไม่มีล็อกอิน:** ระบบเชื่อ `user_id` ที่ผู้เรียกส่งมา ใช้หลังเครือข่ายองค์กรที่เชื่อถือได้เท่านั้น
 - ไม่เช็กวันหยุดนักขัตฤกษ์
 - รันโปรเซสเดียว การกันจองซ้อนอาศัย transaction ของ SQLite ถ้าจะรันหลายโปรเซสต้องย้ายฐานข้อมูล
-- ยังไม่ได้ทดสอบด้วย `go test -race`
