@@ -7,7 +7,9 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/poomyrd-hue/meeting-room-booking/internal/booking"
 	"github.com/poomyrd-hue/meeting-room-booking/internal/store"
@@ -16,6 +18,7 @@ import (
 const (
 	codeInvalidRequest booking.Error = "invalid_request"
 	maxBody                          = 1 << 20
+	maxUserLen                       = 60 // characters; same limit as the UI name field
 )
 
 var statusOf = map[booking.Error]int{
@@ -112,7 +115,9 @@ func (s *server) createBooking(w http.ResponseWriter, r *http.Request) {
 	var in createRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&in); err != nil || in.RoomID == "" || in.UserID == "" || in.Start.IsZero() || in.End.IsZero() {
+	err := dec.Decode(&in)
+	user, ok := cleanUser(in.UserID)
+	if err != nil || in.RoomID == "" || !ok || in.Start.IsZero() || in.End.IsZero() || in.Attendees < 1 {
 		writeError(w, codeInvalidRequest)
 		return
 	}
@@ -121,12 +126,12 @@ func (s *server) createBooking(w http.ResponseWriter, r *http.Request) {
 		writeError(w, err)
 		return
 	}
-	req := booking.Request{RoomID: in.RoomID, UserID: in.UserID, Start: in.Start, End: in.End, Attendees: in.Attendees}
+	req := booking.Request{RoomID: in.RoomID, UserID: user, Start: in.Start, End: in.End, Attendees: in.Attendees}
 	if err := booking.Validate(req, room, s.clock); err != nil {
 		writeError(w, err)
 		return
 	}
-	b := store.Booking{RoomID: in.RoomID, BookerID: in.UserID, Start: in.Start, End: in.End, Attendees: in.Attendees}
+	b := store.Booking{RoomID: in.RoomID, BookerID: user, Start: in.Start, End: in.End, Attendees: in.Attendees}
 	if err := s.store.CreateBooking(r.Context(), &b, s.clock.Now()); err != nil {
 		writeError(w, err)
 		return
@@ -135,8 +140,8 @@ func (s *server) createBooking(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *server) cancelBooking(w http.ResponseWriter, r *http.Request) {
-	user := r.Header.Get("X-User-Id")
-	if user == "" {
+	user, ok := cleanUser(r.Header.Get("X-User-Id"))
+	if !ok {
 		writeError(w, codeInvalidRequest)
 		return
 	}
@@ -146,6 +151,13 @@ func (s *server) cancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "cancelled"})
+}
+
+// cleanUser trims the user id and reports whether it is usable: non-empty and at most maxUserLen characters.
+func cleanUser(s string) (string, bool) {
+	s = strings.TrimSpace(s)
+	n := utf8.RuneCountInString(s)
+	return s, n > 0 && n <= maxUserLen
 }
 
 type bookingJSON struct {

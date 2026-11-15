@@ -85,6 +85,10 @@ func TestCreateBooking(t *testing.T) {
 		{"too far ahead", bookingBody("r1", "alice", "2027-01-15T09:30:00+07:00", "2027-01-15T10:30:00+07:00", 4), 422, "too_far_ahead"},
 		{"over capacity", bookingBody("r1", "alice", d17at10, d17at11, 9), 422, "over_capacity"},
 		{"missing user", bookingBody("r1", "", d17at10, d17at11, 4), 422, "invalid_request"},
+		{"blank user", bookingBody("r1", "   ", d17at10, d17at11, 4), 422, "invalid_request"},
+		{"user too long", bookingBody("r1", strings.Repeat("a", 61), d17at10, d17at11, 4), 422, "invalid_request"},
+		{"zero attendees", bookingBody("r1", "alice", d17at10, d17at11, 0), 422, "invalid_request"},
+		{"negative attendees", bookingBody("r1", "alice", d17at10, d17at11, -1), 422, "invalid_request"},
 		{"missing start", `{"room_id":"r1","user_id":"a","end":"` + d17at11 + `","attendees":2}`, 422, "invalid_request"},
 		{"bad json", `{`, 422, "invalid_request"},
 		{"unknown field", `{"room_id":"r1","user_id":"a","start":"` + d17at10 + `","end":"` + d17at11 + `","attendees":2,"x":1}`, 422, "invalid_request"},
@@ -215,5 +219,23 @@ func TestRoomBookingsByDate(t *testing.T) {
 	}
 	if code, body := do(t, h, "GET", "/rooms/r1/bookings?date=17-11-2026", ""); code != 422 || body["code"] != "invalid_request" {
 		t.Fatalf("got %d %v, want 422 invalid_request", code, body)
+	}
+}
+
+func TestUserIDIsTrimmedAndBounded(t *testing.T) {
+	h := New(newStore(t), fixedClock(now))
+	code, body := do(t, h, "POST", "/bookings", bookingBody("r1", "  alice  ", d17at10, d17at11, 2))
+	if code != 201 || body["booker_id"] != "alice" {
+		t.Fatalf("got %d %v, want 201 with booker_id alice", code, body)
+	}
+	if code, _ := do(t, h, "POST", "/bookings", bookingBody("r1", strings.Repeat("ก", 60), d17at11, "2026-11-17T12:00:00+07:00", 2)); code != 201 {
+		t.Fatalf("60-character name: got %d, want 201 (limit counts characters, not bytes)", code)
+	}
+	id := body["id"].(string)
+	if code, body := do(t, h, "POST", "/bookings/"+id+"/cancel", "", "X-User-Id", "  alice "); code != 200 {
+		t.Fatalf("cancel with padded header: got %d %v, want 200", code, body)
+	}
+	if code, body := do(t, h, "POST", "/bookings/"+id+"/cancel", "", "X-User-Id", "   "); code != 422 || body["code"] != "invalid_request" {
+		t.Fatalf("blank header: got %d %v, want 422 invalid_request", code, body)
 	}
 }
