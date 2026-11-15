@@ -178,6 +178,69 @@ func (s *Store) Cancel(ctx context.Context, id, userID string, now time.Time) er
 	})
 }
 
+// Patch holds the fields an edit may change; nil keeps the current value.
+type Patch struct {
+	Start, End *time.Time
+	Attendees  *int
+}
+
+// Edit applies p to a booking in one transaction: only its booker, only while confirmed and not started.
+// The merged result must pass booking.Validate and must not overlap another confirmed booking (itself excluded).
+func (s *Store) Edit(ctx context.Context, id, userID string, p Patch, clock booking.Clock) (Booking, error) {
+	var b Booking
+	err := s.tx(ctx, func(tx *sql.Tx) error {
+		var start, end, created string
+		err := tx.QueryRowContext(ctx,
+			`SELECT room_id,booker_id,start_utc,end_utc,attendees,status,created_at FROM bookings WHERE id=?`, id).
+			Scan(&b.RoomID, &b.BookerID, &start, &end, &b.Attendees, &b.Status, &created)
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			return booking.ErrBookingNotFound
+		case err != nil:
+			return err
+		case b.BookerID != userID:
+			return booking.ErrNotBooker
+		case b.Status == "cancelled":
+			return booking.ErrAlreadyCancelled
+		case start <= fmtTime(clock.Now()):
+			return booking.ErrAlreadyStarted
+		}
+		b.ID, b.Start, b.End, b.CreatedAt = id, parseTime(start), parseTime(end), parseTime(created)
+		if p.Start != nil {
+			b.Start = *p.Start
+		}
+		if p.End != nil {
+			b.End = *p.End
+		}
+		if p.Attendees != nil {
+			b.Attendees = *p.Attendees
+		}
+		var room booking.Room
+		if err := tx.QueryRowContext(ctx, `SELECT id,name,capacity,floor FROM rooms WHERE id=?`, b.RoomID).
+			Scan(&room.ID, &room.Name, &room.Capacity, &room.Floor); err != nil {
+			return err
+		}
+		req := booking.Request{RoomID: b.RoomID, UserID: b.BookerID, Start: b.Start, End: b.End, Attendees: b.Attendees}
+		if err := booking.Validate(req, room, clock); err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRowContext(ctx,
+			`SELECT COUNT(*) FROM bookings WHERE room_id=? AND id<>? AND status='confirmed' AND start_utc < ? AND end_utc > ?`,
+			b.RoomID, id, fmtTime(b.End), fmtTime(b.Start)).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return booking.ErrTimeConflict
+		}
+		b.Start, b.End = b.Start.UTC(), b.End.UTC()
+		_, err = tx.ExecContext(ctx, `UPDATE bookings SET start_utc=?, end_utc=?, attendees=? WHERE id=?`,
+			fmtTime(b.Start), fmtTime(b.End), b.Attendees, id)
+		return err
+	})
+	return b, err
+}
+
 // BookingsBetween returns confirmed bookings of a room starting in [from, to), earliest first.
 func (s *Store) BookingsBetween(ctx context.Context, roomID string, from, to time.Time) ([]Booking, error) {
 	rows, err := s.db.QueryContext(ctx,

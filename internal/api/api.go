@@ -51,6 +51,7 @@ func New(s *store.Store, c booking.Clock) http.Handler {
 	mux.HandleFunc("GET /rooms/{id}/bookings", srv.roomBookings)
 	mux.HandleFunc("POST /bookings", srv.createBooking)
 	mux.HandleFunc("POST /bookings/{id}/cancel", srv.cancelBooking)
+	mux.HandleFunc("PATCH /bookings/{id}", srv.editBooking)
 	return mux
 }
 
@@ -151,6 +152,32 @@ func (s *server) cancelBooking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"id": id, "status": "cancelled"})
+}
+
+type editRequest struct {
+	Start     *time.Time `json:"start"`
+	End       *time.Time `json:"end"`
+	Attendees *int       `json:"attendees"`
+}
+
+func (s *server) editBooking(w http.ResponseWriter, r *http.Request) {
+	user, ok := cleanUser(r.Header.Get("X-User-Id"))
+	var in editRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxBody))
+	dec.DisallowUnknownFields()
+	err := dec.Decode(&in)
+	if !ok || err != nil || (in.Start == nil && in.End == nil && in.Attendees == nil) ||
+		(in.Start != nil && in.Start.IsZero()) || (in.End != nil && in.End.IsZero()) ||
+		(in.Attendees != nil && *in.Attendees < 1) {
+		writeError(w, codeInvalidRequest)
+		return
+	}
+	b, err := s.store.Edit(r.Context(), r.PathValue("id"), user, store.Patch{Start: in.Start, End: in.End, Attendees: in.Attendees}, s.clock)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toJSON(b))
 }
 
 // cleanUser trims the user id and reports whether it is usable: non-empty and at most maxUserLen characters.
