@@ -54,6 +54,8 @@ Room เพิ่มจากไฟล์ seed (`rooms.json`) ตอนเริ
 | `POST /bookings` | body: `room_id, user_id, start, end, attendees` → 201 |
 | `POST /bookings/{id}/cancel` | ยกเลิก → 200 |
 
+หมายเหตุพฤติกรรมจริง: `GET /rooms/available` ตรวจแค่ว่า `start`/`end` เป็น RFC 3339, `end` > `start`, `attendees` ≥ 1 (ผิด → 422 `invalid_request`) ไม่ตรวจกฎเวลาทำการ; ฟิลด์ `message` ในข้อผิดพลาดเท่ากับ `code`
+
 ### ข้อผิดพลาด
 
 รูปแบบ: `{"code": "...", "message": "..."}`
