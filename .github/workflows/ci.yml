@@ -32,3 +32,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t meeting-room .
+      - run: bash scripts/docker-smoke.sh meeting-room

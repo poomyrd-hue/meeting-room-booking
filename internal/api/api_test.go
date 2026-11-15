@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -237,5 +238,61 @@ func TestUserIDIsTrimmedAndBounded(t *testing.T) {
 	}
 	if code, body := do(t, h, "POST", "/bookings/"+id+"/cancel", "", "X-User-Id", "   "); code != 422 || body["code"] != "invalid_request" {
 		t.Fatalf("blank header: got %d %v, want 422 invalid_request", code, body)
+	}
+}
+
+func TestCreateBookingStartEqualsNow(t *testing.T) {
+	h := New(newStore(t), fixedClock(now))
+	if code, body := do(t, h, "POST", "/bookings", bookingBody("r1", "alice", "2026-11-16T09:00:00+07:00", "2026-11-16T10:00:00+07:00", 2)); code != 201 {
+		t.Fatalf("start == now: got %d %v, want 201", code, body)
+	}
+}
+
+func TestRoomBookingsBangkokDayBoundaries(t *testing.T) {
+	h := New(newStore(t), fixedClock(now))
+	// 08:00 and 19:30 Bangkok on the 17th are 01:00Z and 12:30Z: same UTC day, so only the Bangkok day must match.
+	do(t, h, "POST", "/bookings", bookingBody("r1", "alice", "2026-11-17T08:00:00+07:00", "2026-11-17T08:30:00+07:00", 2))
+	do(t, h, "POST", "/bookings", bookingBody("r1", "alice", "2026-11-17T19:30:00+07:00", "2026-11-17T20:00:00+07:00", 2))
+	for date, want := range map[string]int{"2026-11-16": 0, "2026-11-17": 2, "2026-11-18": 0} {
+		code, body := do(t, h, "GET", "/rooms/r1/bookings?date="+date, "")
+		if got := len(body["list"].([]any)); code != 200 || got != want {
+			t.Fatalf("date %s: got %d %d bookings, want %d", date, code, got, want)
+		}
+	}
+}
+
+func TestCreateBookingConcurrentExactlyOne(t *testing.T) {
+	h := New(newStore(t), fixedClock(now))
+	const n = 20
+	codes := make([]int, n)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := httptest.NewRequest("POST", "/bookings", strings.NewReader(bookingBody("r1", "u", d17at10, d17at11, 2)))
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}()
+	}
+	wg.Wait()
+	count := map[int]int{}
+	for _, c := range codes {
+		count[c]++
+	}
+	if count[201] != 1 || count[409] != n-1 {
+		t.Fatalf("status counts %v, want one 201 and %d 409", count, n-1)
+	}
+}
+
+func TestCancelWrongUserOnCancelledBooking(t *testing.T) {
+	h := New(newStore(t), fixedClock(now))
+	_, b := do(t, h, "POST", "/bookings", bookingBody("r1", "alice", d17at10, d17at11, 2))
+	id := b["id"].(string)
+	do(t, h, "POST", "/bookings/"+id+"/cancel", "", "X-User-Id", "alice")
+	// Authorisation is checked before status, so another user learns nothing about a cancelled booking.
+	if code, body := do(t, h, "POST", "/bookings/"+id+"/cancel", "", "X-User-Id", "bob"); code != 403 || body["code"] != "not_booker" {
+		t.Fatalf("got %d %v, want 403 not_booker", code, body)
 	}
 }
