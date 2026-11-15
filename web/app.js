@@ -40,6 +40,8 @@ const hhmm = (min) => `${pad(Math.floor(min / 60))}:${pad(min % 60)}`;
 const weekday = (date) => new Date(date + "T00:00:00Z").getUTCDay(); // 0 = Sunday
 const fmtTime = (iso) => new Date(iso).toLocaleTimeString("th-TH", { timeZone: "Asia/Bangkok", hour: "2-digit", minute: "2-digit", hour12: false });
 const fmtDate = (date) => new Date(date + "T00:00:00Z").toLocaleDateString("th-TH", { timeZone: "UTC", weekday: "long", day: "numeric", month: "long", year: "numeric" });
+const bkkShift = (iso) => new Date(new Date(iso).getTime() + 7 * 3600e3);
+const bkkMinutes = (iso) => bkkShift(iso).getUTCHours() * 60 + bkkShift(iso).getUTCMinutes();
 const rfc = (date, min) => `${date}T${hhmm(min)}:00+07:00`;
 
 function el(tag, props = {}, ...kids) {
@@ -63,25 +65,34 @@ async function busy(btn, fn) {
 }
 
 // ---- search form ---------------------------------------------------------
+const durLabel = (d) => (d % 60 === 0 ? `${d / 60} ชั่วโมง` : d > 60 ? `${Math.floor(d / 60)} ชั่วโมง 30 นาที` : "30 นาที");
+
+// Start minutes still bookable on a Bangkok date (later than now when the date is today).
+function startMinutes(date) {
+  const now = bkkNow(), nowMin = date === bkkDate() ? now.getUTCHours() * 60 + now.getUTCMinutes() : -1;
+  const out = [];
+  for (let m = OPEN; m < CLOSE; m += STEP) if (m > nowMin) out.push(m);
+  return out;
+}
+
+function durationMinutes(start) {
+  const out = [];
+  for (let d = STEP; d <= MAX_MIN && start + d <= CLOSE; d += STEP) out.push(d);
+  return out;
+}
+
+function fillSelect(sel, values, label, prev) {
+  sel.replaceChildren(...values.map((v) => el("option", { value: v, textContent: label(v) })));
+  if (values.includes(prev)) sel.value = prev;
+}
+
 function fillStarts() {
-  const date = $("date").value, prev = Number($("start").value);
-  const nowMin = date === bkkDate() ? bkkNow().getUTCHours() * 60 + bkkNow().getUTCMinutes() : -1;
-  const opts = [];
-  for (let m = OPEN; m < CLOSE; m += STEP) if (m > nowMin) opts.push(el("option", { value: m, textContent: hhmm(m) }));
-  $("start").replaceChildren(...opts);
-  if (opts.some((o) => Number(o.value) === prev)) $("start").value = prev;
+  fillSelect($("start"), startMinutes($("date").value), hhmm, Number($("start").value));
   fillDurations();
 }
 
 function fillDurations() {
-  const start = Number($("start").value), prev = Number($("duration").value);
-  const opts = [];
-  for (let d = STEP; d <= MAX_MIN && start + d <= CLOSE; d += STEP) {
-    const label = d % 60 === 0 ? `${d / 60} ชั่วโมง` : d > 60 ? `${Math.floor(d / 60)} ชั่วโมง 30 นาที` : "30 นาที";
-    opts.push(el("option", { value: d, textContent: label }));
-  }
-  $("duration").replaceChildren(...opts);
-  if (opts.some((o) => Number(o.value) === prev)) $("duration").value = prev;
+  fillSelect($("duration"), durationMinutes(Number($("start").value)), durLabel, Number($("duration").value));
 }
 
 // Today if a slot is still left and it is a weekday, otherwise the next weekday.
@@ -145,16 +156,51 @@ async function loadSchedule() {
     const user = $("user").value.trim(), now = Date.now();
     ul.replaceChildren(...list.map((b) => {
       const mine = user && b.booker_id === user, started = new Date(b.start).getTime() <= now;
-      const right = el("span", { className: "meta" });
+      const right = el("span", { className: "meta actions" });
+      const li = el("li", {}, el("div", {}, el("strong", {}, `${fmtTime(b.start)}–${fmtTime(b.end)}`), el("div", { className: "meta" }, `ผู้จอง ${b.booker_id} · ${b.attendees} คน${mine ? " (คุณ)" : ""}`)), right);
       if (mine && !started) {
+        const range = `${fmtTime(b.start)}–${fmtTime(b.end)}`;
+        const edit = el("button", { type: "button", className: "secondary", textContent: "แก้ไข" });
+        edit.setAttribute("aria-label", `แก้ไขการจอง ${range}`);
+        edit.onclick = () => { const f = editForm(b); li.replaceChildren(f); f.querySelector("select").focus(); };
         const btn = el("button", { type: "button", className: "secondary", textContent: "ยกเลิก" });
-        btn.setAttribute("aria-label", `ยกเลิกการจอง ${fmtTime(b.start)}–${fmtTime(b.end)}`);
+        btn.setAttribute("aria-label", `ยกเลิกการจอง ${range}`);
         btn.onclick = () => busy(btn, () => cancel(b));
-        right.replaceChildren(btn);
+        right.replaceChildren(edit, btn);
       } else if (started) right.textContent = "เริ่มแล้ว";
-      return el("li", {}, el("div", {}, el("strong", {}, `${fmtTime(b.start)}–${fmtTime(b.end)}`), el("div", { className: "meta" }, `ผู้จอง ${b.booker_id} · ${b.attendees} คน${mine ? " (คุณ)" : ""}`)), right);
+      return li;
     }));
   } catch (e) { say(errText(e.code), "err"); }
+}
+
+function editForm(b) {
+  const date = bkkDate(bkkShift(b.start)), room = rooms.find((r) => r.id === b.room_id);
+  const startMin = bkkMinutes(b.start), durMin = (new Date(b.end) - new Date(b.start)) / 60000;
+  const start = el("select"), dur = el("select");
+  const n = el("input", { type: "number", min: 1, max: room ? room.capacity : 100, value: b.attendees, required: true });
+  fillSelect(start, startMinutes(date), hhmm, startMin);
+  fillSelect(dur, durationMinutes(Number(start.value)), durLabel, durMin);
+  start.onchange = () => fillSelect(dur, durationMinutes(Number(start.value)), durLabel, Number(dur.value));
+  const save = el("button", { type: "submit", textContent: "บันทึก" });
+  const close = el("button", { type: "button", className: "secondary", textContent: "ไม่แก้ไข" });
+  close.onclick = () => loadSchedule();
+  const field = (text, ctl) => el("label", {}, text, ctl);
+  const form = el("form", { className: "edit" }, field("เวลาเริ่ม", start), field("ระยะเวลา", dur), field("จำนวนคน", n), save, close);
+  form.onsubmit = (ev) => { ev.preventDefault(); busy(save, () => saveEdit(b, date, Number(start.value), Number(dur.value), Number(n.value))); };
+  return form;
+}
+
+async function saveEdit(b, date, start, dur, attendees) {
+  const patch = {};
+  if (start !== bkkMinutes(b.start) || start + dur !== bkkMinutes(b.end)) { patch.start = rfc(date, start); patch.end = rfc(date, start + dur); }
+  if (attendees !== b.attendees) patch.attendees = attendees;
+  if (!Object.keys(patch).length) return loadSchedule(); // nothing changed
+  try {
+    await api(`/bookings/${b.id}`, { method: "PATCH", headers: { "X-User-Id": $("user").value.trim() }, body: JSON.stringify(patch) });
+  } catch (e) { say(errText(e.code), "err"); return; } // keep the form open so the input is not lost
+  say("แก้ไขการจองแล้ว", "ok");
+  await loadSchedule();
+  if (currentQuery()) await search();
 }
 
 async function cancel(b) {
