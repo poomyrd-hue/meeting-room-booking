@@ -1,0 +1,7 @@
+.git
+.claude
+*.db
+*.db-wal
+*.db-shm
+*.exe
+*.md
