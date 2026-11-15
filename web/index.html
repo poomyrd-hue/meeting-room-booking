@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>จองห้องประชุม</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>จองห้องประชุม</h1>
+  <div class="user">
+    <label for="user">ชื่อของคุณ</label>
+    <input id="user" autocomplete="username" placeholder="เช่น somchai" maxlength="60">
+  </div>
+</header>
+
+<main>
+  <p id="status" role="status" aria-live="polite" class="status" hidden></p>
+
+  <section aria-labelledby="h-search">
+    <h2 id="h-search">ค้นหาห้องว่าง</h2>
+    <form id="search" class="grid">
+      <div><label for="date">วันที่</label><input id="date" type="date" required></div>
+      <div><label for="start">เวลาเริ่ม</label><select id="start" required></select></div>
+      <div><label for="duration">ระยะเวลา</label><select id="duration" required></select></div>
+      <div><label for="attendees">จำนวนคน</label><input id="attendees" type="number" min="1" max="100" value="2" required></div>
+      <button type="submit">ค้นหา</button>
+    </form>
+    <p class="hint">เปิดให้จอง 08:00–20:00 วันจันทร์–ศุกร์ ครั้งละไม่เกิน 4 ชั่วโมง ล่วงหน้าได้ไม่เกิน 60 วัน</p>
+    <ul id="results" class="cards"></ul>
+  </section>
+
+  <section aria-labelledby="h-sched">
+    <h2 id="h-sched">ตารางห้อง</h2>
+    <div class="grid">
+      <div><label for="room">ห้อง</label><select id="room"></select></div>
+      <div><label for="sdate">วันที่</label><input id="sdate" type="date"></div>
+    </div>
+    <ul id="schedule" class="cards"></ul>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
